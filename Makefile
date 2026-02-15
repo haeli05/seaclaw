@@ -4,8 +4,10 @@ LDFLAGS = -lm
 
 # Source files
 SRCS = src/main.c src/config.c src/workspace.c src/log.c src/arena.c \
-       src/http.c src/provider.c src/tools.c src/tool_shell.c src/tool_file.c \
+       src/http.c src/provider.c src/provider_openai.c \
+       src/tools.c src/tool_shell.c src/tool_file.c \
        src/session.c src/telegram.c \
+       src/memory.c src/ws.c src/cron.c \
        deps/cjson/cJSON.c
 
 OBJS = $(SRCS:.c=.o)
@@ -13,7 +15,7 @@ BIN  = cclaw
 
 # TLS backend (mbedtls by default)
 CFLAGS  += -I deps/mbedtls/include
-LDFLAGS += -L deps/mbedtls/library -lmbedtls -lmbedx509 -lmbedcrypto -lpthread
+LDFLAGS += -L deps/mbedtls/library -lmbedtls -lmbedx509 -lmbedcrypto -lpthread -lsqlite3
 
 # Static build (Linux + musl)
 .PHONY: static
