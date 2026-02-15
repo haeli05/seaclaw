@@ -73,8 +73,13 @@ void config_load_env(CClawConfig *cfg) {
     if ((v = getenv("CCLAW_API_KEY")))       strncpy(cfg->api_key, v, sizeof(cfg->api_key)-1);
     if ((v = getenv("ANTHROPIC_API_KEY")) && !cfg->api_key[0])
         strncpy(cfg->api_key, v, sizeof(cfg->api_key)-1);
-    if ((v = getenv("OPENAI_API_KEY")) && !cfg->api_key[0])
+    if ((v = getenv("CCLAW_PROVIDER")))    strncpy(cfg->provider, v, sizeof(cfg->provider)-1);
+    if ((v = getenv("OPENAI_API_KEY")) && !cfg->api_key[0]) {
         strncpy(cfg->api_key, v, sizeof(cfg->api_key)-1);
+        /* Auto-detect provider if using OpenAI key */
+        if (!strcmp(cfg->provider, "anthropic"))
+            strncpy(cfg->provider, "openai", sizeof(cfg->provider)-1);
+    }
     if ((v = getenv("CCLAW_MODEL")))         strncpy(cfg->model, v, sizeof(cfg->model)-1);
     if ((v = getenv("CCLAW_TELEGRAM_TOKEN"))) {
         strncpy(cfg->telegram_token, v, sizeof(cfg->telegram_token)-1);

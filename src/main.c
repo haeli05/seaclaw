@@ -16,9 +16,13 @@
 #include "workspace.h"
 #include "http.h"
 #include "provider.h"
+#include "provider_openai.h"
 #include "tools.h"
 #include "session.h"
 #include "telegram.h"
+#include "memory.h"
+#include "ws.h"
+#include "cron.h"
 #include "log.h"
 #include "arena.h"
 #include <stdio.h>
@@ -26,6 +30,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #define VERSION "0.1.0"
 
@@ -63,17 +68,34 @@ static char *agent_turn(AgentCtx *ctx, Session *session, const char *user_msg, b
         char *msgs_json = session_messages_json(session);
 
         ChatResponse resp;
-        if (stream) {
-            resp = provider_chat_stream(ctx->http, ctx->cfg->api_key,
-                                        ctx->cfg->model, ctx->system_prompt,
-                                        msgs_json, ctx->tools_json,
-                                        ctx->cfg->temperature,
-                                        print_stream, NULL);
+        bool is_openai = !strcmp(ctx->cfg->provider, "openai");
+
+        if (is_openai) {
+            if (stream) {
+                resp = openai_chat_stream(ctx->http, ctx->cfg->api_key,
+                                          ctx->cfg->model, ctx->system_prompt,
+                                          msgs_json, ctx->tools_json,
+                                          ctx->cfg->temperature,
+                                          print_stream, NULL);
+            } else {
+                resp = openai_chat(ctx->http, ctx->cfg->api_key,
+                                   ctx->cfg->model, ctx->system_prompt,
+                                   msgs_json, ctx->tools_json,
+                                   ctx->cfg->temperature);
+            }
         } else {
-            resp = provider_chat(ctx->http, ctx->cfg->api_key,
-                                 ctx->cfg->model, ctx->system_prompt,
-                                 msgs_json, ctx->tools_json,
-                                 ctx->cfg->temperature);
+            if (stream) {
+                resp = provider_chat_stream(ctx->http, ctx->cfg->api_key,
+                                            ctx->cfg->model, ctx->system_prompt,
+                                            msgs_json, ctx->tools_json,
+                                            ctx->cfg->temperature,
+                                            print_stream, NULL);
+            } else {
+                resp = provider_chat(ctx->http, ctx->cfg->api_key,
+                                     ctx->cfg->model, ctx->system_prompt,
+                                     msgs_json, ctx->tools_json,
+                                     ctx->cfg->temperature);
+            }
         }
         free(msgs_json);
 
@@ -218,6 +240,8 @@ int main(int argc, char **argv) {
             strncpy(cfg.model, argv[++i], sizeof(cfg.model) - 1);
         else if (!strcmp(argv[i], "--telegram"))
             telegram_mode = 1;
+        else if (!strcmp(argv[i], "--gateway-port") && i + 1 < argc)
+            cfg.gateway_port = atoi(argv[++i]);
         else if (argv[i][0] != '-')
             one_shot = argv[i];
     }
@@ -267,6 +291,56 @@ int main(int argc, char **argv) {
 
     config_dump(&cfg);
 
+    /* Start cron scheduler in background thread */
+    CronScheduler cron;
+    cron_init(&cron);
+    pthread_t cron_thread;
+    bool cron_started = false;
+
+    /* Example: heartbeat job every 30 minutes */
+    /* Users can add jobs programmatically via cron_add() */
+    if (1) {
+        pthread_create(&cron_thread, NULL, (void *(*)(void *))cron_run, &cron);
+        cron_started = true;
+        LOG_INFO("Cron scheduler started in background");
+    }
+
+    /* Start WebSocket gateway if configured */
+    pthread_t ws_thread;
+    bool ws_started = false;
+
+    if (cfg.gateway_port > 0) {
+        typedef struct { WsServerConfig ws_cfg; AgentCtx *agent; } WsCtxWrap;
+
+        /* WS message handler — runs agent turn for each message */
+        static bool ws_on_message(int client_fd, const char *msg, size_t len, void *ud) {
+            AgentCtx *actx = ud;
+            (void)len;
+
+            char session_id[64];
+            snprintf(session_id, sizeof(session_id), "ws_%d", client_fd);
+            Session *session = session_new(actx->cfg->workspace, session_id);
+
+            char *reply = agent_turn(actx, session, msg, false);
+            if (reply) {
+                ws_send_text(client_fd, reply, strlen(reply));
+                free(reply);
+            }
+            session_free(session);
+            return true;
+        }
+
+        static WsServerConfig ws_cfg;
+        ws_cfg.port = cfg.gateway_port;
+        ws_cfg.auth_token = cfg.gateway_token;
+        ws_cfg.on_message = ws_on_message;
+        ws_cfg.userdata = &ctx;
+
+        pthread_create(&ws_thread, NULL, (void *(*)(void *))ws_server_start, &ws_cfg);
+        ws_started = true;
+        LOG_INFO("WebSocket gateway starting on port %d", cfg.gateway_port);
+    }
+
     if (telegram_mode) {
         if (!cfg.telegram_token[0]) {
             fprintf(stderr, "Error: no Telegram token. Set CCLAW_TELEGRAM_TOKEN.\n");
@@ -282,6 +356,16 @@ int main(int argc, char **argv) {
         session_free(session);
     } else {
         cli_mode(&ctx);
+    }
+
+    /* Cleanup */
+    if (cron_started) {
+        cron_stop(&cron);
+        pthread_join(cron_thread, NULL);
+    }
+    if (ws_started) {
+        pthread_cancel(ws_thread);
+        pthread_join(ws_thread, NULL);
     }
 
     http_client_free(http);
