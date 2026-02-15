@@ -1,4 +1,4 @@
-# CClaw 🐾
+# SeaClaw 🐾
 
 **OpenClaw rewritten in C.** Single static binary. 709KB. <50ms cold start.
 
